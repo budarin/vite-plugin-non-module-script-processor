@@ -1,0 +1,37 @@
+{
+    "name": "@budarin/vite-plugin-non-module-script-processor",
+    "version": "1.0.0",
+    "description": "Vite плагин для автоматической обработки не-модульных JavaScript скриптов",
+    "keywords": [
+        "vite",
+        "plugin",
+        "non-module",
+        "script",
+        "processor"
+    ],
+    "author": "Вадим Бударин",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/budarin/vite-plugin-non-module-script-processor.git"
+    },
+    "bugs": {
+        "url": "https://github.com/budarin/vite-plugin-non-module-script-processor/issues"
+    },
+    "main": "dist/index.js",
+    "module": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "type": "module",
+    "devDependencies": {
+        "@types/node": "^24.8.1",
+        "prettier": "^3.6.2",
+        "typescript": "^5.9.3",
+        "vite": "^7.1.10"
+    },
+    "scripts": {
+        "build": "tsc",
+        "pnpm-install": "pnpm install",
+        "upgrade-dependencies": "pnpm upgrade -i",
+        "publish-package": "pnpm build && pnpm publish --access=public"
+    }
+}
