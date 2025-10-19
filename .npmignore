@@ -7,3 +7,4 @@ scripts/
 pnpm-lock.yaml
 tsconfig.json
 tsconfig.tsbuildinfo
+arch.md
