@@ -110,6 +110,7 @@ export function nonModuleScriptProcessor(
 
     return {
         name: 'non-module-script-processor',
+        apply: 'build',
 
         configResolved(resolvedConfig) {
             // Получаем доступ к конфигу Vite
