@@ -5,3 +5,4 @@ src/
 scripts/
 .gitignore
 pnpm-lock.yaml
+tsconfig.json
