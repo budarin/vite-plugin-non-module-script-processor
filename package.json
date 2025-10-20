@@ -1,6 +1,6 @@
 {
     "name": "@budarin/vite-plugin-non-module-script-processor",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "description": "Vite плагин для автоматической обработки не-модульных JavaScript скриптов",
     "keywords": [
         "vite",

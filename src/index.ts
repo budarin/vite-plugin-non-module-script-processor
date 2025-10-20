@@ -3,6 +3,12 @@ import type { Plugin, ResolvedConfig } from 'vite';
 import path from 'path';
 import { readFileSync, writeFileSync } from 'fs';
 
+// Константы
+const VIRTUAL_MODULE_PREFIX = '\0non-module-script:';
+const SCRIPT_REGEX =
+    /<script(?![^>]*type\s*=\s*["']module["'])[^>]*\ssrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
+const REGEX_ESCAPE_PATTERN = /[.*+?^${}()|[\]\\]/g;
+
 export type MinifyFunction = (
     code: string,
     config: ResolvedConfig
@@ -36,16 +42,11 @@ export function nonModuleScriptProcessor(
     const { htmlPath = 'index.html', minify: minifyOption } = options;
     const nonModuleScripts: NonModuleScript[] = [];
     let config: ResolvedConfig;
-    const virtualModulePrefix = '\0non-module-script:';
     const chunkIds = new Map<string, string>(); // originalPath -> chunkId
 
     // Кэш для HTML контента
     let cachedHtmlContent: string | null = null;
     let cachedHtmlPath: string | null = null;
-
-    // Компилируем регулярное выражение один раз
-    const SCRIPT_REGEX =
-        /<script(?![^>]*type\s*=\s*["']module["'])[^>]*\ssrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
 
     function getHtmlContent(): string | null {
         const fullHtmlPath = path.resolve(process.cwd(), htmlPath);
@@ -170,7 +171,7 @@ export function nonModuleScriptProcessor(
                 if (!isCustomMinify) {
                     // Эмитим как chunk - тогда Rolldown/Vite автоматически применит минификацию!
                     const fileName = path.basename(script.fullPath);
-                    const virtualId = virtualModulePrefix + script.fullPath;
+                    const virtualId = VIRTUAL_MODULE_PREFIX + script.fullPath;
 
                     const chunkId = this.emitFile({
                         type: 'chunk',
@@ -191,7 +192,7 @@ export function nonModuleScriptProcessor(
 
         resolveId(id) {
             // Резолвим виртуальные модули для наших скриптов
-            if (id.startsWith(virtualModulePrefix)) {
+            if (id.startsWith(VIRTUAL_MODULE_PREFIX)) {
                 return id;
             }
             return null;
@@ -199,8 +200,8 @@ export function nonModuleScriptProcessor(
 
         load(id) {
             // Загружаем содержимое виртуального модуля
-            if (id.startsWith(virtualModulePrefix)) {
-                const scriptPath = id.slice(virtualModulePrefix.length);
+            if (id.startsWith(VIRTUAL_MODULE_PREFIX)) {
+                const scriptPath = id.slice(VIRTUAL_MODULE_PREFIX.length);
                 try {
                     // eslint-disable-next-line security/detect-non-literal-fs-filename
                     const content = readFileSync(scriptPath, 'utf-8');
@@ -291,7 +292,7 @@ export function nonModuleScriptProcessor(
 
                     // Экранируем специальные символы в пути
                     const escapedPath = oldPath.replace(
-                        /[.*+?^${}()|[\]\\]/g,
+                        REGEX_ESCAPE_PATTERN,
                         '\\$&'
                     );
                     const regex = new RegExp(
