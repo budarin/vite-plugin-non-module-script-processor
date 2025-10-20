@@ -39,6 +39,44 @@ export function nonModuleScriptProcessor(
     const virtualModulePrefix = '\0non-module-script:';
     const chunkIds = new Map<string, string>(); // originalPath -> chunkId
 
+    // Кэш для HTML контента
+    let cachedHtmlContent: string | null = null;
+    let cachedHtmlPath: string | null = null;
+
+    // Компилируем регулярное выражение один раз
+    const SCRIPT_REGEX =
+        /<script(?![^>]*type\s*=\s*["']module["'])[^>]*\ssrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
+
+    function getHtmlContent(): string | null {
+        const fullHtmlPath = path.resolve(process.cwd(), htmlPath);
+
+        // Возвращаем кэшированный контент если путь не изменился
+        if (cachedHtmlContent && cachedHtmlPath === fullHtmlPath) {
+            return cachedHtmlContent;
+        }
+
+        try {
+            // eslint-disable-next-line security/detect-non-literal-fs-filename
+            const content = readFileSync(fullHtmlPath, 'utf-8');
+            cachedHtmlContent = content;
+            cachedHtmlPath = fullHtmlPath;
+            return content;
+        } catch (error) {
+            if (config?.logger) {
+                config.logger.error(
+                    `[non-module-script-processor] Error reading HTML file:`
+                );
+                config.logger.error(String(error));
+            } else {
+                console.error(
+                    `[non-module-script-processor] Error reading HTML file:`,
+                    error
+                );
+            }
+            return null;
+        }
+    }
+
     async function minifyCodeWithCustomFunction(code: string): Promise<string> {
         // Используем кастомную функцию минификации если предоставлена
         if (typeof minifyOption === 'function') {
@@ -59,53 +97,53 @@ export function nonModuleScriptProcessor(
         return (
             !src.startsWith('http://') &&
             !src.startsWith('https://') &&
-            !src.startsWith('//')
+            !src.startsWith('//') &&
+            src.length > 0 // Проверяем что строка не пустая
         );
     }
 
+    function isValidScriptPath(scriptPath: string): boolean {
+        // Проверяем только расширение файла
+        // Не проверяем существование файла, так как он может быть создан позже
+        return scriptPath.endsWith('.js') || scriptPath.endsWith('.mjs');
+    }
+
     function findNonModuleScripts(): NonModuleScript[] {
-        const fullHtmlPath = path.resolve(process.cwd(), htmlPath);
+        const htmlContent = getHtmlContent();
+        if (!htmlContent) {
+            return [];
+        }
 
-        try {
-            // eslint-disable-next-line security/detect-non-literal-fs-filename
-            const htmlContent = readFileSync(fullHtmlPath, 'utf-8');
-            const scripts: NonModuleScript[] = [];
+        const scripts: NonModuleScript[] = [];
+        let match;
 
-            const scriptRegex =
-                /<script(?![^>]*type\s*=\s*["']module["'])[^>]*\ssrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
+        // Сбрасываем lastIndex для глобального regex
+        SCRIPT_REGEX.lastIndex = 0;
 
-            let match;
-            while ((match = scriptRegex.exec(htmlContent)) !== null) {
-                const src = match[1];
+        while ((match = SCRIPT_REGEX.exec(htmlContent)) !== null) {
+            const src = match[1];
 
-                if (isLocalScript(src)) {
-                    // Убираем ведущий слэш для корректного path.resolve
-                    const cleanSrc = src.startsWith('/') ? src.slice(1) : src;
-                    const fullPath = path.resolve(process.cwd(), cleanSrc);
+            if (isLocalScript(src)) {
+                // Убираем ведущий слэш для корректного path.resolve
+                const cleanSrc = src.startsWith('/') ? src.slice(1) : src;
+                const fullPath = path.resolve(process.cwd(), cleanSrc);
 
+                // Валидируем путь файла
+                if (isValidScriptPath(fullPath)) {
                     scripts.push({
                         originalPath: src,
                         fullPath,
                         hashedFileName: '',
                     });
+                } else {
+                    config?.logger?.warn(
+                        `[non-module-script-processor] Skipping invalid script: ${src}`
+                    );
                 }
             }
-
-            return scripts;
-        } catch (error) {
-            if (config?.logger) {
-                config.logger.error(
-                    `[non-module-script-processor] Error reading HTML file:`
-                );
-                config.logger.error(String(error));
-            } else {
-                console.error(
-                    `[non-module-script-processor] Error reading HTML file:`,
-                    error
-                );
-            }
-            return [];
         }
+
+        return scripts;
     }
 
     return {
@@ -121,8 +159,15 @@ export function nonModuleScriptProcessor(
             // Эмитим chunks в buildStart - это ранний хук где можно вызывать emitFile с type: 'chunk'
             const foundScripts = findNonModuleScripts();
 
+            // Ранний выход если нет скриптов
+            if (foundScripts.length === 0) {
+                return;
+            }
+
+            const isCustomMinify = typeof minifyOption === 'function';
+
             for (const script of foundScripts) {
-                if (typeof minifyOption !== 'function') {
+                if (!isCustomMinify) {
                     // Эмитим как chunk - тогда Rolldown/Vite автоматически применит минификацию!
                     const fileName = path.basename(script.fullPath);
                     const virtualId = virtualModulePrefix + script.fullPath;
@@ -137,10 +182,6 @@ export function nonModuleScriptProcessor(
                     // Сохраняем chunkId - имя файла получим позже в renderStart
                     chunkIds.set(script.originalPath, chunkId);
                     nonModuleScripts.push(script);
-
-                    // config.logger.info(
-                    //     `[non-module-script-processor] Emitted ${script.originalPath} as chunk - will be minified by ${config.build.minify || 'none'}`
-                    // );
                 } else {
                     // Кастомная минификация - добавляем в список для обработки в generateBundle
                     nonModuleScripts.push(script);
@@ -177,6 +218,13 @@ export function nonModuleScriptProcessor(
         },
 
         async generateBundle() {
+            // Ранний выход если нет скриптов
+            if (nonModuleScripts.length === 0) {
+                return;
+            }
+
+            const isCustomMinify = typeof minifyOption === 'function';
+
             // Получаем имена файлов для emitted chunks ЗДЕСЬ - в generateBundle!
             for (const script of nonModuleScripts) {
                 const chunkId = chunkIds.get(script.originalPath);
@@ -185,34 +233,36 @@ export function nonModuleScriptProcessor(
                 }
             }
 
-            // Обрабатываем скрипты с кастомной минификацией
-            for (const script of nonModuleScripts) {
-                if (
-                    typeof minifyOption === 'function' &&
-                    !script.hashedFileName
-                ) {
-                    try {
-                        // eslint-disable-next-line security/detect-non-literal-fs-filename
-                        let scriptContent = readFileSync(
-                            script.fullPath,
-                            'utf-8'
-                        );
-                        scriptContent =
-                            await minifyCodeWithCustomFunction(scriptContent);
+            // Обрабатываем скрипты с кастомной минификацией только если нужно
+            if (isCustomMinify) {
+                for (const script of nonModuleScripts) {
+                    if (!script.hashedFileName) {
+                        try {
+                            // eslint-disable-next-line security/detect-non-literal-fs-filename
+                            let scriptContent = readFileSync(
+                                script.fullPath,
+                                'utf-8'
+                            );
+                            scriptContent =
+                                await minifyCodeWithCustomFunction(
+                                    scriptContent
+                                );
 
-                        const fileName = path.basename(script.fullPath);
-                        const scriptHash = this.emitFile({
-                            type: 'asset',
-                            name: fileName,
-                            source: scriptContent,
-                        });
+                            const fileName = path.basename(script.fullPath);
+                            const scriptHash = this.emitFile({
+                                type: 'asset',
+                                name: fileName,
+                                source: scriptContent,
+                            });
 
-                        script.hashedFileName = this.getFileName(scriptHash);
-                    } catch (error) {
-                        config.logger.error(
-                            `[non-module-script-processor] Error processing script file ${script.fullPath}:`
-                        );
-                        config.logger.error(String(error));
+                            script.hashedFileName =
+                                this.getFileName(scriptHash);
+                        } catch (error) {
+                            config.logger.error(
+                                `[non-module-script-processor] Error processing script file ${script.fullPath}:`
+                            );
+                            config.logger.error(String(error));
+                        }
                     }
                 }
             }
@@ -221,26 +271,43 @@ export function nonModuleScriptProcessor(
         closeBundle() {
             if (nonModuleScripts.length === 0) return;
 
-            const htmlPath = path.resolve(process.cwd(), 'dist', 'index.html');
+            const distHtmlPath = path.resolve(
+                process.cwd(),
+                'dist',
+                'index.html'
+            );
 
             try {
-                let htmlContent = readFileSync(htmlPath, 'utf-8');
+                let htmlContent = readFileSync(distHtmlPath, 'utf-8');
+
+                // Оптимизация: собираем все замены в один проход
+                const replacements: Array<{ from: RegExp; to: string }> = [];
 
                 for (const script of nonModuleScripts) {
+                    if (!script.hashedFileName) continue;
+
                     const oldPath = script.originalPath;
                     const newPath = `/${script.hashedFileName}`;
 
-                    htmlContent = htmlContent.replace(
-                        // eslint-disable-next-line security/detect-non-literal-regexp
-                        new RegExp(
-                            `src\\s*=\\s*["']${oldPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`,
-                            'g'
-                        ),
-                        `src="${newPath}"`
+                    // Экранируем специальные символы в пути
+                    const escapedPath = oldPath.replace(
+                        /[.*+?^${}()|[\]\\]/g,
+                        '\\$&'
                     );
+                    const regex = new RegExp(
+                        `src\\s*=\\s*["']${escapedPath}["']`,
+                        'g'
+                    );
+
+                    replacements.push({ from: regex, to: `src="${newPath}"` });
                 }
 
-                writeFileSync(htmlPath, htmlContent);
+                // Применяем все замены за один проход
+                for (const { from, to } of replacements) {
+                    htmlContent = htmlContent.replace(from, to);
+                }
+
+                writeFileSync(distHtmlPath, htmlContent);
             } catch (error) {
                 config.logger.error(
                     `[non-module-script-processor] Error updating HTML:`
